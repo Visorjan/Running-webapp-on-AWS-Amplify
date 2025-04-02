@@ -1,0 +1,102 @@
+const AWS = require('aws-sdk');
+const dynamoDB = new AWS.DynamoDB.DocumentClient();
+
+// Get the table name from environment variables
+const TABLE_NAME = process.env.SUBSCRIBERS_TABLE_NAME;
+
+exports.handler = async (event) => {
+    // Set up CORS headers
+    const headers = {
+        'Access-Control-Allow-Origin': '*', // In production, restrict this to your domain
+        'Access-Control-Allow-Headers': 'Content-Type',
+        'Access-Control-Allow-Methods': 'POST, OPTIONS'
+    };
+    
+    // Handle preflight OPTIONS request
+    if (event.httpMethod === 'OPTIONS') {
+        return {
+            statusCode: 200,
+            headers,
+            body: ''
+        };
+    }
+    
+    try {
+        const requestBody = JSON.parse(event.body);
+        const { name, surname, email } = requestBody;
+        
+        // Validate input
+        if (!name || !surname || !email) {
+            return {
+                statusCode: 400,
+                headers,
+                body: JSON.stringify({ 
+                    message: 'Name, surname, and email are required fields.' 
+                })
+            };
+        }
+        
+        // Simple email validation
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(email)) {
+            return {
+                statusCode: 400,
+                headers,
+                body: JSON.stringify({ 
+                    message: 'Invalid email format.' 
+                })
+            };
+        }
+        
+        // Create timestamp and unique ID
+        const timestamp = new Date().toISOString();
+        
+        // Prepare item for DynamoDB
+        const item = {
+            email, // Use email as primary key
+            name,
+            surname,
+            created_at: timestamp,
+            updated_at: timestamp
+        };
+        
+        // Save to DynamoDB
+        await dynamoDB.put({
+            TableName: TABLE_NAME,
+            Item: item,
+            // Prevent overwriting existing emails
+            ConditionExpression: 'attribute_not_exists(email)'
+        }).promise();
+        
+        return {
+            statusCode: 201,
+            headers,
+            body: JSON.stringify({ 
+                message: 'Subscription successful!',
+                timestamp
+            })
+        };
+        
+    } catch (error) {
+        console.error('Error:', error);
+        
+        // Handle the case when email already exists
+        if (error.code === 'ConditionalCheckFailedException') {
+            return {
+                statusCode: 409, // Conflict
+                headers,
+                body: JSON.stringify({ 
+                    message: 'You are already subscribed with this email address.'
+                })
+            };
+        }
+        
+        return {
+            statusCode: 500,
+            headers,
+            body: JSON.stringify({ 
+                message: 'An error occurred while processing your request.'
+            })
+        };
+    }
+};

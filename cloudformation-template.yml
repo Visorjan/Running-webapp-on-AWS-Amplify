@@ -1,0 +1,160 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Call n Go Subscription Service'
+
+Parameters:
+  Stage:
+    Type: String
+    Default: dev
+    Description: Deployment stage (dev, test, prod)
+    
+Resources:
+  # DynamoDB Table for subscribers
+  SubscribersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "call-n-go-subscribers-${Stage}"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: email
+          AttributeType: S
+      KeySchema:
+        - AttributeName: email
+          KeyType: HASH
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES
+      SSESpecification:
+        SSEEnabled: true
+      Tags:
+        - Key: Project
+          Value: CallNGo
+          
+  # Lambda Function Role
+  SubscribeLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: DynamoDBAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                Resource: !GetAtt SubscribersTable.Arn
+                
+  # Lambda Function
+  SubscribeLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "call-n-go-subscribe-${Stage}"
+      Runtime: nodejs16.x
+      Handler: index.handler
+      Role: !GetAtt SubscribeLambdaRole.Arn
+      Code:
+        ZipFile: |
+          // Lambda code will be deployed separately
+      Environment:
+        Variables:
+          SUBSCRIBERS_TABLE_NAME: !Ref SubscribersTable
+      Timeout: 10
+      MemorySize: 128
+      Tags:
+        - Key: Project
+          Value: CallNGo
+          
+  # API Gateway
+  SubscribeApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub "call-n-go-api-${Stage}"
+      Description: API for Call n Go subscription service
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+          
+  # API Resource
+  SubscribeResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref SubscribeApi
+      ParentId: !GetAtt SubscribeApi.RootResourceId
+      PathPart: subscribe
+  
+  # API Method
+  SubscribeMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref SubscribeApi
+      ResourceId: !Ref SubscribeResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${SubscribeLambda.Arn}/invocations"
+      
+  # CORS Support for API
+  SubscribeOptionMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref SubscribeApi
+      ResourceId: !Ref SubscribeResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates:
+              application/json: ''
+        PassthroughBehavior: WHEN_NO_MATCH
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+            
+  # API Deployment
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - SubscribeMethod
+      - SubscribeOptionMethod
+    Properties:
+      RestApiId: !Ref SubscribeApi
+      StageName: !Ref Stage
+      
+  # Lambda Permission for API Gateway
+  LambdaApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref SubscribeLambda
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${SubscribeApi}/*/*/*"
+
+Outputs:
+  ApiUrl:
+    Description: URL of the API endpoint
+    Value: !Sub "https://${SubscribeApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/subscribe"
+  
+  SubscribersTable:
+    Description: DynamoDB table for subscribers
+    Value: !Ref SubscribersTable
